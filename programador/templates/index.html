@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cloud Run Job & ESP32 Programmer</title>
+    <script src="https://cdn.socket.io/4.5.1/socket.io.min.js"></script>
+    <script>
+      const socket = io();
+
+      // Escuchar actualizaciones de log desde el servidor
+      socket.on("log_update", (data) => {
+        const logContainer = document.getElementById("jobLogs");
+        logContainer.innerHTML += `<p><strong>Status:</strong> ${data.status}</p>`;
+        logContainer.scrollTop = logContainer.scrollHeight;
+
+        // Detectar estados específicos y mostrar acciones relacionadas
+        if (data.status.includes("start")) {
+          console.log("Job iniciado: Comenzando compilación...");
+        } else if (data.status.includes("running")) {
+          console.log("Job en ejecución...");
+        } else if (data.status.includes("completed")) {
+          console.log(
+            "Job completado exitosamente: Preparando para programar ESP32..."
+          );
+        } else if (data.status.includes("ESP32 programado exitosamente")) {
+          alert("¡El ESP32 ha sido programado con éxito!");
+        }
+      });
+
+      // Escuchar actualizaciones en tiempo real de puertos desde el servidor
+      socket.on("update_ports", (ports) => {
+        const portSelect = document.getElementById("port");
+        portSelect.innerHTML = ""; // Limpiar el selector antes de llenarlo
+
+        if (ports.length > 0) {
+          ports.forEach((port) => {
+            const option = document.createElement("option");
+            option.value = port.device;
+            option.textContent = `${port.device} - ${port.hwid}`;
+            portSelect.appendChild(option);
+          });
+        } else {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "No se detectaron dispositivos";
+          portSelect.appendChild(option);
+        }
+      });
+
+      // Ejecutar el trabajo y programar el ESP32
+      async function executeAndProgram(event) {
+        event.preventDefault();
+        const formData = new FormData(document.getElementById("jobForm"));
+        const selectedPort = document.getElementById("port").value;
+
+        if (!selectedPort) {
+          alert("Debe seleccionar un puerto antes de ejecutar el trabajo.");
+          return;
+        }
+
+        formData.append("port", selectedPort); // Agregar el puerto seleccionado al formulario
+        const logContainer = document.getElementById("jobLogs");
+        logContainer.innerHTML = ""; // Limpiar los logs al iniciar el proceso
+        logContainer.innerHTML += `<p><strong>Status:</strong> Comenzó la ejecución del trabajo y la programación.</p>`;
+
+        try {
+          const response = await fetch("/execute_and_program", {
+            method: "POST",
+            body: formData,
+          });
+          const result = await response.json();
+
+          if (result.status !== "success") {
+            alert(`Error: ${result.message}`);
+            logContainer.innerHTML += `<p><strong>Status:</strong> Error: ${result.message}</p>`;
+          }
+        } catch (error) {
+          alert(
+            `Error al ejecutar el trabajo o programar el ESP32: ${error.message}`
+          );
+          logContainer.innerHTML += `<p><strong>Status:</strong> Error: ${error.message}</p>`;
+        }
+      }
+
+      function initializeForm() {
+        document.getElementById("UUID").value = generateUUID();
+      }
+
+      function generateUUID() {
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+          /[xy]/g,
+          function (c) {
+            const r = (Math.random() * 16) | 0,
+              v = c === "x" ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          }
+        );
+      }
+    </script>
+  </head>
+  <body onload="initializeForm();">
+    <h1>Cloud Run Job & ESP32 Programmer</h1>
+
+    <!-- Formulario para ejecutar el Cloud Run Job y programar el ESP32 -->
+    <form id="jobForm" onsubmit="executeAndProgram(event)">
+      <h2>Cloud Run Job & ESP32 Programming</h2>
+
+      <label for="port">Selecciona un puerto:</label>
+      <select id="port" name="port"></select
+      ><br />
+
+      <label for="CODE_BUCKET">CODE_BUCKET:</label>
+      <input
+        type="text"
+        id="CODE_BUCKET"
+        name="CODE_BUCKET"
+        value="codigo-taximetro"
+        required
+      /><br />
+
+      <label for="OUTPUT_BUCKET">OUTPUT_BUCKET:</label>
+      <input
+        type="text"
+        id="OUTPUT_BUCKET"
+        name="OUTPUT_BUCKET"
+        value="codigo-taximetro-binario"
+        required
+      /><br />
+
+      <label for="FILE_NAME">FILE_NAME:</label>
+      <input
+        type="text"
+        id="FILE_NAME"
+        name="FILE_NAME"
+        value="wb.ino"
+        required
+      /><br />
+
+      <label for="BIN_NAME">BIN_NAME:</label>
+      <input
+        type="text"
+        id="BIN_NAME"
+        name="BIN_NAME"
+        value="firmware.bin"
+        required
+      /><br />
+
+      <label for="BOARD">BOARD:</label>
+      <input
+        type="text"
+        id="BOARD"
+        name="BOARD"
+        value="esp32:esp32:esp32"
+        required
+      /><br />
+
+      <label for="CONFIG_FILE">CONFIG_FILE:</label>
+      <input
+        type="text"
+        id="CONFIG_FILE"
+        name="CONFIG_FILE"
+        value="config.h"
+        required
+      /><br />
+
+      <label for="USER">USER:</label>
+      <input type="text" id="USER" name="USER" value="Unknown" required /><br />
+
+      <label for="UUID">UUID:</label>
+      <input type="text" id="UUID" name="UUID" readonly required /><br />
+
+      <label for="PATENTE">PATENTE:</label>
+      <input
+        type="text"
+        id="PATENTE"
+        name="PATENTE"
+        value="LFXL-13"
+        required
+      /><br />
+
+      <label for="RESOLUCION">RESOLUCION:</label>
+      <input
+        type="text"
+        id="RESOLUCION"
+        name="RESOLUCION"
+        value="1000.0000"
+        required
+      /><br />
+
+      <label for="TARIFA_INICIAL">TARIFA_INICIAL:</label>
+      <input
+        type="text"
+        id="TARIFA_INICIAL"
+        name="TARIFA_INICIAL"
+        value="450"
+        required
+      /><br />
+
+      <label for="TARIFA_CAIDA_PARCIAL_METROS"
+        >TARIFA_CAIDA_PARCIAL_METROS:</label
+      >
+      <input
+        type="text"
+        id="TARIFA_CAIDA_PARCIAL_METROS"
+        name="TARIFA_CAIDA_PARCIAL_METROS"
+        value="200"
+        required
+      /><br />
+
+      <label for="TARIFA_CAIDA_PARCIAL_MINUTO"
+        >TARIFA_CAIDA_PARCIAL_MINUTO:</label
+      >
+      <input
+        type="text"
+        id="TARIFA_CAIDA_PARCIAL_MINUTO"
+        name="TARIFA_CAIDA_PARCIAL_MINUTO"
+        value="200"
+        required
+      /><br />
+
+      <label for="COLOR_FONDO_PANTALLA">COLOR_FONDO_PANTALLA:</label>
+      <input
+        type="text"
+        id="COLOR_FONDO_PANTALLA"
+        name="COLOR_FONDO_PANTALLA"
+        value="TFT_BLACK"
+        required
+      /><br />
+
+      <label for="COLOR_LETRAS_PANTALLA">COLOR_LETRAS_PANTALLA:</label>
+      <input
+        type="text"
+        id="COLOR_LETRAS_PANTALLA"
+        name="COLOR_LETRAS_PANTALLA"
+        value="TFT_YELLOW"
+        required
+      /><br />
+
+      <label for="COLOR_PRECIO_PANTALLA">COLOR_PRECIO_PANTALLA:</label>
+      <input
+        type="text"
+        id="COLOR_PRECIO_PANTALLA"
+        name="COLOR_PRECIO_PANTALLA"
+        value="TFT_WHITE"
+        required
+      /><br />
+
+      <label for="MOSTRAR_VELOCIDAD_EN_PANTALLA"
+        >MOSTRAR_VELOCIDAD_EN_PANTALLA:</label
+      >
+      <input
+        type="text"
+        id="MOSTRAR_VELOCIDAD_EN_PANTALLA"
+        name="MOSTRAR_VELOCIDAD_EN_PANTALLA"
+        value="false"
+        required
+      /><br />
+
+      <label for="PROPAGANDA_1">PROPAGANDA_1:</label>
+      <input
+        type="text"
+        id="PROPAGANDA_1"
+        name="PROPAGANDA_1"
+        value="Propaganda 1"
+        required
+      /><br />
+
+      <label for="PROPAGANDA_2">PROPAGANDA_2:</label>
+      <input
+        type="text"
+        id="PROPAGANDA_2"
+        name="PROPAGANDA_2"
+        value="Propaganda 2"
+        required
+      /><br />
+
+      <label for="PROPAGANDA_3">PROPAGANDA_3:</label>
+      <input
+        type="text"
+        id="PROPAGANDA_3"
+        name="PROPAGANDA_3"
+        value="Propaganda 3"
+        required
+      /><br />
+
+      <label for="PROPAGANDA_4">PROPAGANDA_4:</label>
+      <input
+        type="text"
+        id="PROPAGANDA_4"
+        name="PROPAGANDA_4"
+        value="Propaganda 4"
+        required
+      /><br />
+
+      <button type="submit">Ejecutar Job y Programar ESP32</button>
+    </form>
+
+    <h2>Logs:</h2>
+    <div
+      id="jobLogs"
+      style="
+        border: 1px solid black;
+        padding: 10px;
+        height: 150px;
+        overflow-y: auto;
+      "
+    ></div>
+  </body>
+</html>

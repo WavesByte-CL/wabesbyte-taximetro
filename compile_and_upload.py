@@ -1,6 +1,6 @@
 import os
 import subprocess
-from google.cloud import storage
+from google.cloud import storage, firestore
 import uuid
 from datetime import datetime
 
@@ -32,9 +32,64 @@ PROPAGANDA_3 = os.getenv("PROPAGANDA_3", "")
 PROPAGANDA_4 = os.getenv("PROPAGANDA_4", "")
 
 # Inicializa Google Cloud Storage
-client = storage.Client()
-code_bucket = client.bucket(CODE_BUCKET)
-output_bucket = client.bucket(OUTPUT_BUCKET)
+storage_client = storage.Client()
+code_bucket = storage_client.bucket(CODE_BUCKET)
+output_bucket = storage_client.bucket(OUTPUT_BUCKET)
+
+# Inicializa Firestore
+firestore_client = firestore.Client()
+
+def log_to_firestore(status, message=None, path=None, env_vars=None):
+    """
+    Registra logs en Firestore.
+    """
+    log_data = {
+        "user": USER,
+        "uuid": RUN_UUID,
+        "date": CURRENT_DATE,
+        "patente": PATENTE,
+        "status": status,
+        "message": message,
+        "path": path,
+        "env_vars": env_vars,
+        "timestamp": datetime.utcnow()
+    }
+    # Crear la estructura de Firestore: logs/user/date/uuid/document
+    doc_ref = firestore_client.collection("logs") \
+        .document(USER) \
+        .collection(CURRENT_DATE) \
+        .document(RUN_UUID)
+    doc_ref.set(log_data)
+    print(f"Log registrado en Firestore: {log_data}")
+
+def get_env_vars():
+    """
+    Obtiene todas las variables de entorno relevantes para incluirlas en los logs.
+    """
+    return {
+        "PATENTE": PATENTE,
+        "RESOLUCION": RESOLUCION,
+        "TARIFA_INICIAL": TARIFA_INICIAL,
+        "TARIFA_CAIDA_PARCIAL_METROS": TARIFA_CAIDA_PARCIAL_METROS,
+        "TARIFA_CAIDA_PARCIAL_MINUTO": TARIFA_CAIDA_PARCIAL_MINUTO,
+        "COLOR_FONDO_PANTALLA": COLOR_FONDO_PANTALLA,
+        "COLOR_LETRAS_PANTALLA": COLOR_LETRAS_PANTALLA,
+        "COLOR_PRECIO_PANTALLA": COLOR_PRECIO_PANTALLA,
+        "MOSTRAR_VELOCIDAD_EN_PANTALLA": MOSTRAR_VELOCIDAD_EN_PANTALLA,
+        "PROPAGANDA_1": PROPAGANDA_1,
+        "PROPAGANDA_2": PROPAGANDA_2,
+        "PROPAGANDA_3": PROPAGANDA_3,
+        "PROPAGANDA_4": PROPAGANDA_4,
+        "CODE_BUCKET": CODE_BUCKET,
+        "OUTPUT_BUCKET": OUTPUT_BUCKET,
+        "FILE_NAME": FILE_NAME,
+        "CONFIG_FILE": CONFIG_FILE,
+        "BIN_NAME": BIN_NAME,
+        "BOARD": BOARD,
+        "USER": USER,
+        "UUID": RUN_UUID,
+        "DATE": CURRENT_DATE
+    }
 
 def download_file(bucket, remote_path, local_path):
     """Descarga un archivo desde Google Cloud Storage."""
@@ -122,6 +177,7 @@ def compile_code(sketch_dir):
             print(f"STDERR:\n{result.stderr}")
             raise subprocess.CalledProcessError(result.returncode, compile_command)
     except subprocess.CalledProcessError as e:
+        log_to_firestore("error", message=str(e), env_vars=get_env_vars())
         raise RuntimeError(f"Fallo al compilar el sketch: {e}")
 
     # Buscar el archivo binario generado
@@ -138,11 +194,16 @@ def upload_binary(bin_path):
     print(f"Subiendo el binario a {output_path}...")
     blob = output_bucket.blob(output_path)
     blob.upload_from_filename(bin_path)
-    print(f"Binario subido a gs://{OUTPUT_BUCKET}/{output_path}.")
+    # Generar la URL final del archivo en Google Cloud Storage
+    final_path = f"gs://{OUTPUT_BUCKET}/{output_path}"
+    print(f"Binario subido a {final_path}.")
+    log_to_firestore("success", path=final_path, env_vars=get_env_vars())
+    return final_path
 
 def main():
     try:
         print(f"Iniciando ejecución con UUID: {RUN_UUID}, USER: {USER}, y PATENTE: {PATENTE}")
+        log_to_firestore("start", message="Proceso iniciado", env_vars=get_env_vars())
 
         # Configurar el sketch con sus dependencias
         sketch_dir = setup_sketch()
@@ -155,10 +216,12 @@ def main():
         bin_file = compile_code(sketch_dir)
 
         # Subir el binario al bucket de destino
-        upload_binary(bin_file)
+        final_path = upload_binary(bin_file)
 
+        log_to_firestore("completed", message="Proceso completado con éxito", path=final_path, env_vars=get_env_vars())
         print("Proceso completado exitosamente.")
     except Exception as e:
+        log_to_firestore("failed", message=str(e), env_vars=get_env_vars())
         print(f"Error: {e}")
 
 if __name__ == "__main__":
