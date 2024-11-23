@@ -1,0 +1,8 @@
+# Archivos sensibles
+config/service-account.json
+
+# Archivos temporales
+workspace/
+*.bin
+*.out
+__pycache__/
