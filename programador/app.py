@@ -1,17 +1,21 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, redirect
 from flask_socketio import SocketIO, emit
 import os
 import sys
 from esptool import main as esptool_main
 import serial.tools.list_ports
-from firebase_admin import credentials, firestore, initialize_app
+from firebase_admin import credentials, firestore, initialize_app, auth
 from google.cloud import storage
-import time
 import threading
+import time
 import subprocess
+from datetime import datetime  # Para obtener la fecha actual
+import uuid  # Para generar UUID
 
 # Ruta del archivo de credenciales SA
 SERVICE_ACCOUNT_PATH = "programador/wavesbyte-taximetro-504536420576.json"
+
+# Definir ruta temporal para el binario
 TEMP_BIN_PATH = "./firmware.bin"
 
 # Inicializar Firebase Admin
@@ -20,6 +24,8 @@ try:
     cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
     initialize_app(cred)
     print("Firebase Admin inicializado correctamente.")
+except ValueError as e:
+    print("Firebase Admin ya estaba inicializado:", e)
 except Exception as e:
     print(f"Error al inicializar Firebase Admin: {e}")
     exit(1)
@@ -32,56 +38,48 @@ except Exception as e:
     print(f"Error al obtener cliente Firestore: {e}")
     exit(1)
 
-# Configuración Flask y Socket.IO
+# Inicializar Flask y Socket.IO
 app = Flask(__name__)
 socketio = SocketIO(app)
 
-# Detectar el puerto del dispositivo conectado
+# Detectar los puertos disponibles
 def list_serial_ports():
-    """
-    Lista los puertos seriales que coincidan con los IDs conocidos.
-    """
-    ids_conocidos = ["1A86:7523", "10C4:EA60", "0403:6001"]  # IDs conocidos
-    ports = serial.tools.list_ports.comports()
-    return [
-        {"device": port.device, "description": port.description, "hwid": port.hwid}
-        for port in ports
-        if any(id_conocido in port.hwid for id_conocido in ids_conocidos)
-    ]
+    try:
+        ids_conocidos = ["1A86:7523", "10C4:EA60", "0403:6001"]
+        ports = serial.tools.list_ports.comports()
+        filtered_ports = [
+            {"device": port.device, "description": port.description, "hwid": port.hwid}
+            for port in ports
+            if any(id_conocido in port.hwid for id_conocido in ids_conocidos)
+        ]
+        return filtered_ports
+    except Exception as e:
+        print(f"Error al listar puertos: {e}")
+        return []
 
-# Emitir periódicamente los puertos disponibles
+# Emitir periódicamente los puertos disponibles al cliente
 def emit_ports_periodically():
     while True:
         try:
             ports = list_serial_ports()
-            socketio.emit("update_ports", ports)
+            socketio.emit('update_ports', ports)
         except Exception as e:
             print(f"Error al emitir puertos: {e}")
         time.sleep(2)
 
-# Iniciar hilo para emitir puertos
-threading.Thread(target=emit_ports_periodically, daemon=True).start()
-
 # Descargar el binario desde Google Cloud Storage
 def download_binary(gcs_path):
-    """
-    Descarga el archivo binario desde Google Cloud Storage.
-    """
     try:
         if not gcs_path.startswith("gs://"):
             raise ValueError("La ruta no es válida para GCS.")
 
-        # Parsear bucket y archivo
-        gcs_path = gcs_path[5:]  # Remover 'gs://'
+        gcs_path = gcs_path[5:]
         bucket_name, *file_path_parts = gcs_path.split('/')
         file_path = "/".join(file_path_parts)
 
-        # Inicializar cliente de almacenamiento
         storage_client = storage.Client.from_service_account_json(SERVICE_ACCOUNT_PATH)
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_path)
-
-        # Descargar el archivo
         blob.download_to_filename(TEMP_BIN_PATH)
         print(f"Binario descargado correctamente a {TEMP_BIN_PATH}")
         return TEMP_BIN_PATH
@@ -91,9 +89,6 @@ def download_binary(gcs_path):
 
 # Ejecutar un Cloud Run Job con parámetros
 def run_cloud_run_job_with_env(project_id, region, job_name, parameters, args=None):
-    """
-    Ejecuta un Cloud Run Job y actualiza variables de entorno con parámetros específicos.
-    """
     try:
         env_vars = ",".join([f"{key}={value}" for key, value in parameters.items()])
         command = [
@@ -108,54 +103,62 @@ def run_cloud_run_job_with_env(project_id, region, job_name, parameters, args=No
         print("Ejecutando comando:", " ".join(command))
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0:
+            print(f"Error ejecutando el comando: {result.stderr}")
             raise Exception(result.stderr)
-        print(f"Resultado del comando: {result.stdout}")
         return result.stdout
     except Exception as e:
-        print(f"Error ejecutando el comando: {e}")
+        print(f"Error al ejecutar el Cloud Run Job: {e}")
         raise
 
-# Escuchar cambios en Firestore para un job específico
-def listen_to_job_status(doc_path, port):
-    """
-    Registra un listener para escuchar cambios en el documento de Firestore.
-    """
+# Middleware para verificar el token de Firebase
+def verify_token(token):
+    try:
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except Exception as e:
+        print(f"Error verificando el token: {e}")
+        return None
+
+# Escuchar cambios en Firestore
+def listen_to_job_status(user, uuid, port):
+    fecha = datetime.utcnow().strftime("%Y-%m-%d")  # Obtener la fecha actual en formato YYYY-MM-DD
+    document_path = f"logs/{user}/{fecha}/{uuid}"
+    print(f"Escuchando logs en: {document_path}")
+
     def on_snapshot(doc_snapshot, changes, read_time):
         for doc in doc_snapshot:
-            log_data = doc.to_dict()
-            status = log_data.get("status", "unknown")
-            print(f"Estado actualizado en Firestore: {status}")
+            if doc.exists:
+                log_data = doc.to_dict()
+                job_status = log_data.get("status", "unknown")
+                print(f"Estado actualizado del job: {job_status}")
+                socketio.emit('log_update', {"status": job_status})
 
-            # Emitir estado actualizado al cliente
-            socketio.emit("log_update", {"status": f"Firestore Status: {status}"})
+                if job_status == "success":
+                    try:
+                        binary_path = log_data.get("path")
+                        if binary_path:
+                            socketio.emit('log_update', {"status": "Descargando binario..."})
+                            download_binary(binary_path)
 
-            # Si el estado es `completed`, programar el ESP32
-            if status == "completed":
-                try:
-                    binary_path = log_data.get("path")
-                    if binary_path:
-                        socketio.emit("log_update", {"status": "Descargando binario..."})
-                        download_binary(binary_path)
-                    
-                    socketio.emit("log_update", {"status": "Programando ESP32..."})
-                    program_status = program_esp32(port)
-                    socketio.emit("log_update", {"status": program_status})
-                except Exception as e:
-                    error_message = f"Error en la programación del ESP32: {str(e)}"
-                    socketio.emit("log_update", {"status": error_message})
+                        socketio.emit('log_update', {"status": "Programando ESP32..."})
+                        program_status = program_esp32(port)
+                        socketio.emit('log_update', {"status": program_status})
+                    except Exception as e:
+                        error_message = f"Error en la programación del ESP32: {str(e)}"
+                        socketio.emit('log_update', {"status": error_message})
+                elif job_status == "completed":
+                    print("El proceso se completó con éxito.")
+            else:
+                print("El documento ya no existe.")
 
-    doc_ref = db.document(doc_path)
+    doc_ref = db.document(document_path)
     doc_ref.on_snapshot(on_snapshot)
 
 # Programar el ESP32 usando esptool
 def program_esp32(port, baud_rate="115200"):
-    """
-    Programa el ESP32 con el binario descargado.
-    """
     try:
-        firmware_path = TEMP_BIN_PATH
-        if not os.path.isfile(firmware_path):
-            raise FileNotFoundError(f"El archivo firmware.bin no se encuentra en la raíz del proyecto: {firmware_path}")
+        if not os.path.isfile(TEMP_BIN_PATH):
+            raise FileNotFoundError(f"El archivo firmware.bin no se encuentra en la raíz del proyecto: {TEMP_BIN_PATH}")
 
         command = [
             "--port", port,
@@ -163,51 +166,84 @@ def program_esp32(port, baud_rate="115200"):
             "write_flash",
             "--flash_mode", "dio",
             "--flash_size", "4MB",
-            "0x10000", firmware_path
+            "0x10000", TEMP_BIN_PATH
         ]
         print("Ejecutando esptool con los siguientes argumentos:", command)
-
         sys.argv = ["esptool.py"] + command
         esptool_main()
+
+        print("El ESP32 ha sido programado exitosamente.")
         return "ESP32 programado exitosamente."
     except Exception as e:
         print(f"Error durante la programación del ESP32: {e}")
         raise
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+# Ruta de login
+@app.route('/login', methods=['GET'])
+def login_page():
+    return render_template('login.html')
 
-@app.route("/execute_and_program", methods=["POST"])
+# Ruta principal
+@app.route('/')
+def index():
+    id_token = request.cookies.get('idToken')  # Leer token desde la cookie
+    if not id_token:
+        return redirect('/login')  # Redirige al login si no hay token
+
+    user = verify_token(id_token)
+    if user:
+        print(f"Usuario autenticado: {user['email']}")
+        # Pasar el email del usuario al template
+        return render_template('index.html', email=user['email'], uid=user['uid'])
+    else:
+        return redirect('/login')  # Redirige si el token no es válido
+
+# Establecer token en cookie
+@app.route('/set_token', methods=['POST'])
+def set_token():
+    data = request.json
+    id_token = data.get('idToken')
+    if not id_token:
+        return jsonify({"status": "error", "message": "Falta el token"}), 400
+
+    try:
+        decoded_token = verify_token(id_token)
+        if decoded_token:
+            response = jsonify({"status": "success", "message": "Token establecido"})
+            response.set_cookie('idToken', id_token, httponly=True, secure=True)
+            return response
+        else:
+            return jsonify({"status": "error", "message": "Token inválido"}), 401
+    except Exception as e:
+        print(f"Error al establecer el token: {e}")
+        return jsonify({"status": "error", "message": "Error al procesar el token"}), 500
+
+@app.route('/execute_and_program', methods=['POST'])
 def execute_and_program():
-    """
-    Ejecuta el Cloud Run Job y programa el ESP32 basado en el resultado.
-    """
     try:
         parameters = request.form.to_dict()
         project_id = "wavesbyte-taximetro"
         region = "us-central1"
         job_name = "esp32-compiler"
+        user = parameters.get("USER")
+        uuid_val = parameters.get("UUID")
         args = ["/workspace/compile_and_upload.py"]
 
-        # Validar puerto seleccionado
         port = parameters.get("port")
         if not port:
-            return jsonify({"status": "error", "message": "Seleccione un puerto antes de ejecutar el trabajo."})
+            return jsonify({"status": "error", "message": "Debe seleccionar un puerto antes de ejecutar el trabajo."})
 
-        # Ejecutar el Cloud Run Job
-        socketio.emit("log_update", {"status": "Ejecutando Cloud Run Job..."})
+        socketio.emit('log_update', {"status": "Ejecutando Cloud Run Job..."})
         run_cloud_run_job_with_env(project_id, region, job_name, parameters, args)
 
-        # Registrar listener en Firestore
-        doc_path = f"logs/{parameters['USER']}/{time.strftime('%Y-%m-%d')}/{parameters['UUID']}"
-        listen_to_job_status(doc_path, port)
+        listen_to_job_status(user, uuid_val, port)
 
-        return jsonify({"status": "success", "message": "Cloud Run Job iniciado y monitoreando Firestore."})
+        return jsonify({"status": "success", "message": "Cloud Run Job iniciado y monitoreando Firebase."})
     except Exception as e:
         error_message = f"Error al ejecutar el trabajo: {str(e)}"
         print(error_message)
         return jsonify({"status": "error", "message": error_message})
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    threading.Thread(target=emit_ports_periodically, daemon=True).start()
     socketio.run(app, debug=True)
