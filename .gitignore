@@ -9,3 +9,4 @@ __pycache__/
 programador/__pycache__/
 programador/wavesbyte-taximetro-504536420576.json
 programador/firmware.bin
+.env
