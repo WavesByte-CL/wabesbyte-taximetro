@@ -119,7 +119,7 @@
     </div>
 
     <script>
-        const API_KEY = "AIzaSyA7A1s151WbRkms8SiqOURc_moNxX9bQK4"; // Reemplaza con tu clave de API web de Firebase
+        const API_KEY = "{{ api_key }}"; // La clave ahora viene del backend
         const LOGIN_ENDPOINT = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`;
         const loadingMessage = document.getElementById("loadingMessage");
         const errorMessage = document.getElementById("errorMessage");

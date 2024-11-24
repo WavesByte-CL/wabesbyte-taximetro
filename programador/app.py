@@ -10,7 +10,9 @@ import threading
 import time
 import subprocess
 from datetime import datetime  # Para obtener la fecha actual
-import uuid  # Para generar UUID
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Ruta del archivo de credenciales SA
 SERVICE_ACCOUNT_PATH = "programador/wavesbyte-taximetro-504536420576.json"
@@ -181,7 +183,7 @@ def program_esp32(port, baud_rate="115200"):
 # Ruta de login
 @app.route('/login', methods=['GET'])
 def login_page():
-    return render_template('login.html')
+    return render_template('login.html', api_key=FIREBASE_API_KEY)
 
 # Ruta principal
 @app.route('/')
